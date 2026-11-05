@@ -13,20 +13,35 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest,windows-latest]
         include:
           - os: ubuntu-latest
             scriptExt: "sh"
             libExt: "so"
             name: "linux"
+            platform: "linux"
+            arch: "x86_64"
+            javaArch: "x64"
           - os: windows-latest
             scriptExt: "bat"
             libExt: "dll"
             name: "windows"
+            platform: "windows"
+            arch: "x86_64"
+            javaArch: "x64"
+          - os: windows-2022
+            scriptExt: "bat"
+            libExt: "dll"
+            name: "windows-x86"
+            platform: "windows"
+            arch: "x86"
+            javaArch: "x86"
           - os: macos-15-intel
             scriptExt: "sh"
             libExt: "dylib"
             name: "macos"
+            platform: "macos"
+            arch: "x86_64"
+            javaArch: "x64"
     name: Build Natives - ${{ matrix.name }}
     runs-on:  ${{ matrix.os }}
     steps:
@@ -41,6 +56,7 @@ jobs:
         run: bash .github/scripts/checkout-runtime-submodules.sh
 
       - name: Set up Python
+        if: matrix.arch != 'x86'
         uses: actions/setup-python@v6
         with:
           python-version: '3.12'
@@ -50,7 +66,7 @@ jobs:
         with:
           distribution: temurin
           java-version: '8'
-          architecture: x64
+          architecture: ${{ matrix.javaArch }}
 
       - name: Verify JDK and JNI headers
         shell: bash
@@ -64,7 +80,7 @@ jobs:
             Windows) test -f "$JAVA_HOME/include/win32/jni_md.h" ;;
             Linux) test -f "$JAVA_HOME/include/linux/jni_md.h" ;;
           esac
-      
+
       - name: Install dependencies for ubuntu-latest
         if: matrix.os == 'ubuntu-latest'
         run: sudo apt update && sudo apt install -y libpulse-dev libglvnd-dev libx11-dev libopenal-dev libvulkan-dev libgl1-mesa-dev libgles2-mesa-dev libglu1-mesa-dev libgtk-3-dev ninja-build swig
@@ -74,8 +90,8 @@ jobs:
         run: |
           brew install swig
 
-      - name: Install dependencies for windows-latest
-        if: matrix.os == 'windows-latest'
+      - name: Install dependencies for Windows
+        if: matrix.platform == 'windows'
         uses: crazy-max/ghaction-chocolatey@v1
         with:
           args: install swig
@@ -90,15 +106,23 @@ jobs:
 
       - name: Build natives for ${{ matrix.name }}
         shell: bash
-        run: |  
+        run: |
           mkdir -p build/dist-native
 
           cd build
 
-          cmake -D BUILD_DX12=OFF -D BUILD_EXAMPLES=OFF -D BUILD_TOOLS=OFF -DJAVA_HOME:PATH="$JAVA_HOME" ..
-          cmake --build . --config Release
+          if [ "${{ matrix.arch }}" = "x86" ]; then
+            cmake -G "Visual Studio 17 2022" -A Win32 \
+              -D BUILD_DX12=OFF -D BUILD_EXAMPLES=OFF -D BUILD_TOOLS=OFF \
+              -DEFFEKSEER_BUILD_PYTHON=OFF -DEFFEKSEER_BUILD_CSHARP=OFF \
+              -DJAVA_HOME:PATH="$JAVA_HOME" ..
+            cmake --build . --config Release --target EffekseerNativeForJava
+          else
+            cmake -D BUILD_DX12=OFF -D BUILD_EXAMPLES=OFF -D BUILD_TOOLS=OFF -DJAVA_HOME:PATH="$JAVA_HOME" ..
+            cmake --build . --config Release
+          fi
 
-          dest="dist-native/${{ matrix.name }}/x86_64"
+          dest="dist-native/${{ matrix.platform }}/${{ matrix.arch }}"
           mkdir -p "$dest"
           cp -v src/cpp/Release/*.${{ matrix.libExt }} "$dest"||cp -v src/cpp/*.${{ matrix.libExt }} "$dest"
 
@@ -116,10 +140,12 @@ jobs:
       - name: Smoke test Python and Java bindings
         shell: bash
         run: |
-          native_dir="build/dist-native/${{ matrix.name }}/x86_64"
+          native_dir="build/dist-native/${{ matrix.platform }}/${{ matrix.arch }}"
           prefix="lib"
-          if [ "${{ matrix.name }}" = "windows" ]; then prefix=""; fi
-          python tests/smoke_native.py "$native_dir/${prefix}EffekseerNativeForPython.${{ matrix.libExt }}"
+          if [ "${{ matrix.platform }}" = "windows" ]; then prefix=""; fi
+          if [ "${{ matrix.arch }}" != "x86" ]; then
+            python tests/smoke_native.py "$native_dir/${prefix}EffekseerNativeForPython.${{ matrix.libExt }}"
+          fi
           mkdir -p build/binding-smoke
           javac -d build/binding-smoke src/java/swig/*.java tests/SmokeJava.java
           java -cp build/binding-smoke SmokeJava "$native_dir/${prefix}EffekseerNativeForJava.${{ matrix.libExt }}"
@@ -180,6 +206,12 @@ jobs:
           name: natives-windows
           path: build/dist-natives
 
+      - name: Download Natives (windows x86)
+        uses: actions/download-artifact@v4
+        with:
+          name: natives-windows-x86
+          path: build/dist-natives
+
       - name: Build Maven Artifacts
         shell: bash
         run: |
@@ -200,14 +232,14 @@ jobs:
               fi
           done
           cd "$cdd"
-         
+
 
           export VERSION="$(cat VERSION)"
 
           cd src
           chmod +x ./generate_maven_artifacts.sh
           ./generate_maven_artifacts.sh
-      
+
       - name: Upload Maven Artifacts
         uses: actions/upload-artifact@v4
         with:
@@ -249,7 +281,7 @@ jobs:
       - name: Build C# Library
         shell: bash
         run: |
-    
+
 
           cdd=$PWD
           cd build/dist-natives/
@@ -268,7 +300,7 @@ jobs:
               fi
           done
           cd "$cdd"
-         
+
 
           cd src
           chmod +x ./generate_swig_wrapper.sh
@@ -278,7 +310,7 @@ jobs:
           mkdir -p build/dist-csharp/Effekseer
           cp -R src/csharp/swig build/dist-csharp/Effekseer/
           cp VERSION build/dist-csharp/
-      
+
       - name: Upload C# Library
         uses: actions/upload-artifact@v4
         with:
@@ -319,7 +351,7 @@ jobs:
       - name: Build Python Library
         shell: bash
         run: |
-    
+
 
           cdd=$PWD
           cd build/dist-natives/
@@ -328,7 +360,7 @@ jobs:
           cp linux/x86_64/*Python.so $cdd/build/dist-python/_EffekseerCore.so
 
           cd "$cdd"
-         
+
           cd src
           chmod +x ./generate_swig_wrapper.sh
           ./generate_swig_wrapper.sh
@@ -336,7 +368,7 @@ jobs:
 
           cp -R src/python/swig/* build/dist-python/
           cp VERSION build/dist-python/
-      
+
       - name: Upload Python Library
         uses: actions/upload-artifact@v4
         with:
@@ -361,12 +393,12 @@ jobs:
         run: |
           cd maven
           ls -lh
-          set -e 
+          set -e
           files="`find . \( -name "*.jar" -o -name "*.pom" \) -type f -print`"
           set -f
           for art in $files; do
               file="${art:2}"
-              dest="https://maven.pkg.github.com/$GITHUB_REPOSITORY/$file" 
+              dest="https://maven.pkg.github.com/$GITHUB_REPOSITORY/$file"
               echo "Upload $file to $dest"
               curl -X PUT  $dest -H "Authorization: token  ${{ secrets.GITHUB_TOKEN }}" --upload-file $file -vvv
           done
@@ -384,7 +416,7 @@ jobs:
       - name: Initialize runtime submodules
         shell: bash
         run: bash .github/scripts/checkout-runtime-submodules.sh
-      
+
       - name: Set up JDK 1.8
         uses: actions/setup-java@v5
         with:
@@ -408,8 +440,8 @@ jobs:
       - name: Install dependencies for windows-latest
         uses: crazy-max/ghaction-chocolatey@v1
         with:
-          args: install swig 
-        
+          args: install swig
+
       - name: Build
         run: |
          cd src
@@ -424,5 +456,3 @@ jobs:
         with:
           name: libGdxSample-windows
           path: examples/libGdxSample
-
-
